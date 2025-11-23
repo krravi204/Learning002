@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Growth Tracker</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen p-4 sm:p-8">
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">My Daily Growth Journal</h1>
+            <p id="user-info" class="text-sm text-gray-500 mt-2">Connecting...</p>
+        </header>
+
+        <!-- Input Form Card -->
+        <div class="bg-white p-6 sm:p-8 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold text-indigo-600 mb-4">Today's Reflection</h2>
+            <form id="growth-form">
+                <textarea id="reflection-input" rows="5"
+                    placeholder="What is one thing you learned or achieved today? How did you grow?"
+                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none mb-4"
+                    required></textarea>
+
+                <button type="submit" id="save-button"
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md disabled:bg-indigo-400"
+                    disabled>
+                    Save Today's Update
+                </button>
+            </form>
+        </div>
+
+        <!-- Past Entries Section -->
+        <div class="bg-white p-6 sm:p-8 rounded-xl shadow-lg">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-6">Past Entries</h2>
+            <div id="entries-list" class="space-y-4">
+                <p id="loading-message" class="text-gray-500 italic">Loading your past reflections...</p>
+                <!-- Entries will be dynamically inserted here -->
+            </div>
+        </div>
+
+        <!-- Custom Alert Modal (for non-alert() use) -->
+        <div id="custom-alert-modal"
+            class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+            <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+                <div class="mt-3 text-center">
+                    <h3 class="text-lg leading-6 font-medium text-gray-900" id="alert-title"></h3>
+                    <div class="mt-2 px-7 py-3">
+                        <p class="text-sm text-gray-500" id="alert-message"></p>
+                    </div>
+                    <div class="items-center px-4 py-3">
+                        <button id="alert-ok-button"
+                            class="px-4 py-2 bg-indigo-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, where, orderBy, serverTimestamp, setLogLevel, Timestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase
+        if (Object.keys(firebaseConfig).length === 0) {
+            console.error("Firebase configuration is missing. Cannot initialize Firestore.");
+            document.getElementById('loading-message').textContent = "Error: Firebase configuration missing.";
+            document.getElementById('save-button').disabled = true;
+        }
+
+        // Set Firebase logging level to Debug
+        setLogLevel('debug');
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        let userId = null;
+        const COLLECTION_NAME = 'growth_updates';
+
+        const saveButton = document.getElementById('save-button');
+        const reflectionInput = document.getElementById('reflection-input');
+        const userInfoElement = document.getElementById('user-info');
+        const entriesList = document.getElementById('entries-list');
+        const form = document.getElementById('growth-form');
+        const loadingMessage = document.getElementById('loading-message');
+
+        // --- Custom Alert Function ---
+        function customAlert(title, message) {
+            const modal = document.getElementById('custom-alert-modal');
+            document.getElementById('alert-title').textContent = title;
+            document.getElementById('alert-message').textContent = message;
+            modal.classList.remove('hidden');
+            document.getElementById('alert-ok-button').onclick = () => {
+                modal.classList.add('hidden');
+            };
+        }
+
+        // --- Authentication Logic ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                // User is signed in
+                userId = user.uid;
+                userInfoElement.textContent = `User ID: ${userId}. All data is private.`;
+                saveButton.disabled = false;
+                loadingMessage.textContent = 'Ready to fetch your reflections.';
+
+                // Start listening for data updates
+                startRealtimeListener();
+
+            } else {
+                // User is signed out or not yet signed in. Attempt sign-in.
+                try {
+                    let userCredential;
+                    if (initialAuthToken) {
+                        userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        userCredential = await signInAnonymously(auth);
+                    }
+                    // The onAuthStateChanged listener above will handle the success case.
+
+                } catch (error) {
+                    console.error("Error signing in:", error);
+                    customAlert("Authentication Error", "Could not sign in to the database. Check console for details.");
+                    userInfoElement.textContent = `Error connecting.`;
+                    saveButton.disabled = true;
+                    loadingMessage.textContent = "Error loading data.";
+                }
+            }
+        });
+
+        // --- Data Submission Logic ---
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!userId) {
+                customAlert("Authentication Required", "Please wait for the user to authenticate before saving.");
+                return;
+            }
+
+            const reflection = reflectionInput.value.trim();
+            if (reflection === '') {
+                customAlert("Input Required", "Please enter your daily reflection before saving.");
+                return;
+            }
+
+            saveButton.disabled = true;
+            saveButton.textContent = 'Saving...';
+
+            try {
+                // Private data path: /artifacts/{appId}/users/{userId}/growth_updates
+                const path = `artifacts/${appId}/users/${userId}/${COLLECTION_NAME}`;
+
+                await addDoc(collection(db, path), {
+                    reflection: reflection,
+                    timestamp: serverTimestamp(),
+                });
+
+                reflectionInput.value = ''; // Clear input on success
+                customAlert("Success!", "Your daily update has been saved.");
+
+            } catch (error) {
+                console.error("Error saving document: ", error);
+                customAlert("Error", "Failed to save your reflection. See console for details.");
+            } finally {
+                saveButton.disabled = false;
+                saveButton.textContent = 'Save Today\'s Update';
+            }
+        });
+
+        // --- Real-time Data Listener ---
+        function startRealtimeListener() {
+            if (!userId) return; // Guard clause until auth is ready
+
+            const path = `artifacts/${appId}/users/${userId}/${COLLECTION_NAME}`;
+
+            // Query for all documents, ordered by timestamp descending
+            const q = query(collection(db, path), orderBy("timestamp", "desc"));
+
+            onSnapshot(q, (snapshot) => {
+                const entries = [];
+                snapshot.forEach((doc) => {
+                    entries.push({ id: doc.id, ...doc.data() });
+                });
+
+                renderEntries(entries);
+            }, (error) => {
+                console.error("Error listening to collection:", error);
+                loadingMessage.textContent = "Error fetching past data. Check console.";
+            });
+        }
+
+        // --- Rendering Function ---
+        function renderEntries(entries) {
+            entriesList.innerHTML = ''; // Clear existing entries
+
+            if (entries.length === 0) {
+                entriesList.innerHTML = '<p class="text-gray-500 italic">No entries yet. Submit your first reflection above!</p>';
+                return;
+            }
+
+            entries.forEach(entry => {
+                // Convert Firestore Timestamp to readable date/time string
+                let dateString = 'Saving...';
+                if (entry.timestamp instanceof Timestamp) {
+                    // Using toLocaleString for a friendly, localized format
+                    dateString = entry.timestamp.toDate().toLocaleString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                }
+
+                const entryElement = document.createElement('div');
+                entryElement.className = 'bg-gray-50 p-4 rounded-lg border border-gray-200 shadow-sm';
+                entryElement.innerHTML = `
+                    <p class="text-sm font-medium text-indigo-500">${dateString}</p>
+                    <p class="mt-2 text-gray-700 whitespace-pre-wrap">${entry.reflection}</p>
+                `;
+                entriesList.appendChild(entryElement);
+            });
+        }
+    </script>
+</body>
+
+</html>
